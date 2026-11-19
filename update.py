@@ -1,6 +1,6 @@
 """Safe self-update: check(manifest_url) and apply(). Replaces ONLY shipped files; the workspace, brand.json, env, state and outputs are never touched.
 Manifest: {"version": "1.1.0", "date": "...", "url": "<zip url or local path>", "sha256": "<hex of the zip>"}. The zip holds the skill folder files (an optional single top folder is stripped)."""
-import hashlib, json, os, shutil, tempfile, urllib.request, urllib.error, zipfile
+import hashlib, json, os, shutil, tempfile, time, urllib.parse, urllib.request, urllib.error, zipfile
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_URL = "https://raw.githubusercontent.com/devanasolver/gta6-clipper/main/manifest.json"
@@ -14,7 +14,12 @@ def current(root=HERE):
 def vt(v): return tuple(int(x) for x in str(v).split(".") if x.isdigit())
 def fetch(url, timeout=20):
     if "://" not in url: return Path(url).read_bytes()
-    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "clipper-update"}), timeout=timeout).read()
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    query.append(("cachebust", str(time.time_ns())))
+    url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(query), parts.fragment))
+    headers = {"User-Agent": "clipper-update", "Cache-Control": "no-cache", "Pragma": "no-cache"}
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout).read()
 def check(url=None, root=HERE):
     """-> dict(current, latest, update:bool, status:'ok'|'no_info'|'error', manifest?)"""
     cur = current(root)

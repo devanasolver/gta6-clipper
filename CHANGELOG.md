@@ -5,6 +5,7 @@ All notable changes to gta6-clipper. Newest first.
 ## 1.0.8
 ### Changed
 - Removed third-party posting integration; scheduling and CSV export remain, and posting is manual.
+- Update checks bypass cached copies of the release manifest.
 
 ## 1.0.7
 ### Added
