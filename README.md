@@ -93,7 +93,7 @@ No paid plan? In the app choose **Settings > AI tool**: OpenCode (free models, n
 
 ## Posting
 
-The app builds your posting schedule: drag Shorts onto the week, spread them automatically, export as CSV. Posting itself is always your call: upload manually or connect any scheduler you like. If you already use Blotato, the app can send approved Shorts through its API with your own key (Settings > Connections). Optional, paid third-party service. **This fork has no affiliate links, partner links or promo codes anywhere.**
+The app builds your posting schedule: drag Shorts onto the week, spread them automatically, and export a CSV. Posting is manual. Use the CSV or export individual Shorts and upload them yourself.
 
 ## Reusable assets
 
@@ -124,7 +124,7 @@ Use the "Propose a change" button in the app, or open an issue: https://github.c
 
 ## Credits
 
-Fork of [gta6-clipper](https://gitlab.com/nocodehack.io/gta6-clipper), originally built by NoCodeHack (MIT license; original copyright kept in [LICENSE](LICENSE)). This version removes all affiliate/partner links and works with any AI agent.
+Fork of [gta6-clipper](https://gitlab.com/nocodehack.io/gta6-clipper), originally built by NoCodeHack (MIT license; original copyright kept in [LICENSE](LICENSE)). This version keeps the original MIT credit and works with any AI agent.
 
 Made by **Anas**:
 

@@ -2,19 +2,19 @@
 """Clipper app v2: local web UI over a workspace of runs. stdlib only.
 Usage: PY app.py <workspace folder> [--port 8765] [--no-open]
 Lists every clips/out folder under the workspace (one tab per run).
-Nothing is posted unless a Blotato key is set AND you click Confirm send on one Short."""
+Posting is manual. The app can organize a schedule and export it as CSV."""
 import ytstats, csv, shlex, secrets, datetime, io, json, os, re, shutil, subprocess, sys, threading, time, zipfile, urllib.request, urllib.error, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
 HERE = Path(__file__).resolve().parent
-ENV = Path.home() / ".clipper" / "blotato.env"   # outside HERE: the AI run gets --add-dir HERE and must not see the key
+ENV = Path.home() / ".clipper" / "settings.env"   # outside HERE: the AI run gets --add-dir HERE and must not see local settings
 OLD_ENV = HERE / ".env"
+LEGACY_SETTINGS = Path.home() / ".clipper" / "blotato.env"
 TOKEN = secrets.token_urlsafe(24); PORT = 0   # per-start token the page echoes on every POST
 WS = None; STATE = None
 JOBS = {}; JLOCK = threading.Lock()
-BLOTATO = "https://backend.blotato.com/v2"
 SKIP = {".venv", "node_modules", "app_renders", "models", "fonts", "rejected", "critic", "viral", "src", "__pycache__", ".git"}
 # ---------- AI providers: link any AI tool, or none ----------
 # text cmd = answers a prompt (titles, picks); run cmd = may run tools (download, render). {prompt_file} = path of a file holding the prompt (no stdin then).
@@ -41,14 +41,30 @@ EDITABLE = set("start end hook title hashtags credit keywords style layout forma
 
 def env():
     d = {}
-    if ENV.exists():
-        for l in ENV.read_text(encoding="utf-8").splitlines():
+    source = ENV if ENV.exists() else LEGACY_SETTINGS
+    if source.exists():
+        for l in source.read_text(encoding="utf-8").splitlines():
             if "=" in l and not l.startswith("#"):
-                k, v = l.split("=", 1); d[k.strip()] = v.strip()
+                k, v = l.split("=", 1)
+                k = k.strip()
+                if source == LEGACY_SETTINGS and k.startswith("BLOTATO_"): continue
+                d[k] = v.strip()
+        if source == LEGACY_SETTINGS:
+            if d:
+                ENV.parent.mkdir(parents=True, exist_ok=True)
+                ENV.write_text("\n".join(f"{k}={v}" for k, v in d.items()) + "\n", encoding="utf-8")
+            source.unlink()
     return d
 def save_env(d): ENV.parent.mkdir(parents=True, exist_ok=True); ENV.write_text("\n".join(f"{k}={v}" for k, v in d.items()) + "\n", encoding="utf-8")
-if OLD_ENV.exists() and not ENV.exists():  # migrate once: copy to the home dir, then delete the old file
-    ENV.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(OLD_ENV, ENV); OLD_ENV.unlink()
+if OLD_ENV.exists() and not ENV.exists():  # migrate local settings, dropping retired posting-service keys
+    values = {}
+    for line in OLD_ENV.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.startswith("#"):
+            key, value = line.split("=", 1); key = key.strip()
+            if not key.startswith("BLOTATO_"): values[key] = value.strip()
+    ENV.parent.mkdir(parents=True, exist_ok=True)
+    ENV.write_text("\n".join(f"{k}={v}" for k, v in values.items()) + ("\n" if values else ""), encoding="utf-8")
+    OLD_ENV.unlink()
 SL = threading.Lock()
 def load_state():
     s = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
@@ -290,17 +306,10 @@ def moments_of(root, pk):  # (moments clipped to +-10 min around the Short, stre
             return [], _MOM[str(t)][1]
     except Exception: pass
     return [], None
-def sent_ids():
-    f = WS / "blotato_sent.jsonl"; r = set()
-    try:
-        for l in f.read_text(encoding="utf-8").splitlines():
-            if l.strip(): j = json.loads(l); r.add((j.get("run"), j.get("file")))
-    except Exception: pass
-    return r
 def library(day=None):
     try: YTL = json.loads((WS / "yt" / "links.json").read_text(encoding="utf-8"))  # Shorts linked to a YouTube video count as published
     except Exception: YTL = {}
-    out = []; S = load_state(); SENT = sent_ids()
+    out = []; S = load_state()
     for r in find_runs():
         try: root = run_dir(r["id"])
         except Exception: continue
@@ -309,7 +318,7 @@ def library(day=None):
             if day and d != day: continue
             pk = pick_for(root, s["name"]) or {}
             mo, sd = moments_of(root, pk); ss = S["shorts"].get(f"{r['id']}|{s['file']}", {})
-            out.append(dict(s, moments=mo, stream_dur=sd, published=bool(ss.get("sent") or ss.get("youtube_id") or ss.get("yt_id") or (r["id"], s["file"]) in SENT or f'{r["id"]}|{s["file"]}' in YTL), stream=stream_of(root, s, pk), run=r["id"], run_label=r["label"], created=c.isoformat(timespec="seconds"), day=d, versions=len(s["variants"]),
+            out.append(dict(s, moments=mo, stream_dur=sd, published=bool(ss.get("youtube_id") or ss.get("yt_id") or f'{r["id"]}|{s["file"]}' in YTL), stream=stream_of(root, s, pk), run=r["id"], run_label=r["label"], created=c.isoformat(timespec="seconds"), day=d, versions=len(s["variants"]),
                             edits=len(S["shorts"].get(f"{r['id']}|{s['file']}", {}).get("edits", [])),
                             review=S["shorts"].get(f"{r['id']}|{s['file']}", {}).get("review", "none"), reviewed_at=S["shorts"].get(f"{r['id']}|{s['file']}", {}).get("reviewed_at"), _m=m.stat().st_mtime))
     out.sort(key=lambda x: (x["created"], x["_m"]), reverse=True)
@@ -322,14 +331,11 @@ def streams():
         x["count"] += 1; x["approved"] += s["review"] == "approved"; x["day_last"] = max(x["day_last"], s["day"])
     return sorted(g.values(), key=lambda x: x["day_last"], reverse=True)
 def connections():
-    k = bool(env().get("BLOTATO_API_KEY"))
     return dict(twitch=dict(ok=True, needs_key=False, steps=["Nothing to set up: Twitch chat is read anonymously.", "Paste a twitch.tv link or a streamer name and go."]),
         youtube=dict(ok=True, needs_key=False, optional_key=True, steps=["Nothing needed for chat replay or live chat.", "Optional: Settings > YouTube > paste a YouTube API key to see view stats."]),
-        kick=dict(ok=True, needs_key=False, steps=["Nothing to set up: paste a kick.com link."]),
-        blotato=dict(ok=k, has_key=k, signup_url=os.environ.get("BLOTATO_SIGNUP_URL") or env().get("BLOTATO_SIGNUP_URL") or os.environ.get("BLOTATO_AFFILIATE_URL") or env().get("BLOTATO_AFFILIATE_URL") or "https://blotato.com", steps=["1. Create an account at my.blotato.com.", "2. Settings > API > copy your API key.", "3. Paste it in Settings > Blotato and press Save."]))
+        kick=dict(ok=True, needs_key=False, steps=["Nothing to set up: paste a kick.com link."]))
 def conn_test(name):
-    if name not in ("twitch", "youtube", "kick", "blotato"): raise ValueError("unknown connection")
-    if name == "blotato": k = bool(env().get("BLOTATO_API_KEY")); return dict(ok=k, detail="key saved (not tested: no network call to Blotato)" if k else "no key saved")
+    if name not in ("twitch", "youtube", "kick"): raise ValueError("unknown connection")
     try:
         import chat; ok, detail = chat.check(name); return dict(ok=bool(ok), detail=str(detail))  # read-only 10 s chat probe, no keys
     except Exception as e: return dict(ok=False, detail=f"check failed: {e}")
@@ -495,34 +501,6 @@ def ask_ai(rid, file, ai):
     return [re.sub(r'^[\-\d\.\)\*\s"]+|"$', "", l).strip() for l in text_ai(ai_cmd(ai), prompt).splitlines() if l.strip()][:3]
 
 
-# ---------- blotato ----------
-def blotato_requests(s, f, key, uploaded=None):
-    """The exact HTTP requests a send would make (shown to the user first)."""
-    post = dict(accountId=f.get("accountId", ""), content=dict(text=f"{s['title']}\n\n{s['hashtags']}\n{s['credit']}", mediaUrls=[uploaded or "<publicUrl from step 1>"], platform=f["platform"]),
-                target={"targetType": f["platform"]})
-    if f["platform"] == "youtube": post["target"].update(title=s["title"][:100], privacyStatus="private", shouldNotifySubscribers=False)
-    if f["platform"] == "tiktok": post["target"].update(privacyLevel="SELF_ONLY", disabledComments=False, disabledDuet=False, disabledStitch=False, isBrandedContent=False, isYourBrand=False, isAiGenerated=False)
-    body = dict(post=post)
-    if f.get("scheduledTime"): body["scheduledTime"] = f["scheduledTime"]  # UTC ISO, e.g. 2026-12-01T15:00:00Z
-    H = {"blotato-api-key": "<set>" if key else "<NO KEY SET>", "Content-Type": "application/json"}
-    return [dict(step=1, method="POST", url=f"{BLOTATO}/media/uploads", headers=H, body=dict(filename=s["file"])),
-            dict(step=2, method="PUT", url="<presignedUrl from step 1>", headers={}, body=f"<raw bytes of {s['file']}>"),
-            dict(step=3, method="POST", url=f"{BLOTATO}/posts", headers=H, body=body)]
-def http(method, url, key=None, body=None, raw=None):
-    h = {} if raw is not None else {"Content-Type": "application/json"}
-    if key: h["blotato-api-key"] = key
-    data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
-    with urllib.request.urlopen(urllib.request.Request(url, data=data, method=method, headers=h), timeout=300) as r: return json.loads(r.read() or b"{}")
-def blotato_send(rid, s, f, key):
-    up = http("POST", f"{BLOTATO}/media/uploads", key, dict(filename=s["file"]))
-    http("PUT", up["presignedUrl"], raw=(run_dir(rid) / s["file"]).read_bytes())
-    req = blotato_requests(s, f, key, up["publicUrl"])[2]
-    r = http("POST", req["url"], key, req["body"]); sent_log(rid, s["file"], f.get("platform", "?")); return r
-def sent_log(rid, file, platform):  # feeds /api/published (source "blotato") and the local count
-    now = datetime.datetime.now().isoformat(timespec="seconds")
-    with SL:
-        with open(WS / "blotato_sent.jsonl", "a", encoding="utf-8") as fh: fh.write(json.dumps(dict(at=now, run=rid, file=file, platform=platform)) + "\n")
-        S = load_state(); S["shorts"].setdefault(f"{rid}|{file}", {})["sent"] = now; save_state(S)
 
 def schedule_rows():
     S = load_state(); rows = []
@@ -664,17 +642,19 @@ def proposal(d):
     return dict(ok=True, issue_url=url, note="We read every idea; updates ship every 5 hours.")
 def published():
     rows = []
-    f = WS / "blotato_sent.jsonl"
-    if f.exists(): rows = [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]; src = "blotato"
     e = env()
-    if not rows and e.get("YT_API_KEY") and e.get("YT_CHANNEL"):
-        try: rows = [dict(at=v["published"], platform="youtube") for v in ytstats.latest_shorts(e["YT_API_KEY"], e["YT_CHANNEL"], 50)]; src = "youtube"
+    if e.get("YT_API_KEY") and e.get("YT_CHANNEL"):
+        try: rows = [dict(at=v["published"], platform="youtube") for v in ytstats.latest_shorts(e["YT_API_KEY"], e["YT_CHANNEL"], 50)]
         except Exception: rows = []
     if not rows:
-        rows = [dict(at=v["sent"], platform="local") for v in load_state()["shorts"].values() if v.get("sent")]; src = "local"
+        links = {}
+        try: links = json.loads((WS / "yt" / "links.json").read_text(encoding="utf-8"))
+        except Exception: pass
+        rows = [dict(at=datetime.datetime.now().isoformat(timespec="seconds"), platform="youtube") for v in load_state()["shorts"].values() if v.get("youtube_id") or v.get("yt_id")]
+        if not rows: rows = [dict(at=datetime.datetime.now().isoformat(timespec="seconds"), platform="youtube") for _ in links.values()]
     bp, bd = {}, {}
-    for r in rows: bp[r.get("platform", "?")] = bp.get(r.get("platform", "?"), 0) + 1; bd[r["at"][:10]] = bd.get(r["at"][:10], 0) + 1
-    return dict(total=len(rows), by_platform=bp, by_day=dict(sorted(bd.items())), source=src)
+    for r in rows: bp[r.get("platform", "youtube")] = bp.get(r.get("platform", "youtube"), 0) + 1; bd[r["at"][:10]] = bd.get(r["at"][:10], 0) + 1
+    return dict(total=len(rows), by_platform=bp, by_day=dict(sorted(bd.items())), source="youtube" if rows else "local")
 def api56(method, path, q, d):  # -> (code, json) or None when the route is not ours
     if path == "/api/pickmode": return 200, pickmode_api(d if method == "POST" else None)
     if path == "/api/streamers":
@@ -744,7 +724,7 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/shorts":
                 if not q.get("run"): return self.send(400, {"error": "missing ?run=<run id> (see /api/runs)"})
                 return self.send(200, dict(shorts=shorts(q["run"]), styles=styles(), layouts=["stack", "bubble", "full"], formats=formats(), style_info=style_info(), memes=MEMES,
-                    ais=list(PROV), run_ais=list(PROV), has_key=bool(env().get("BLOTATO_API_KEY")), ai=cur_ai()))
+                    ais=list(PROV), run_ais=list(PROV), ai=cur_ai()))
             if u.path == "/api/ai": return self.send(200, dict(providers=providers(), current=cur_ai()))
             if u.path == "/api/themes": return self.send(200, themes())
             if u.path.startswith("/api/yt/"):
@@ -819,20 +799,11 @@ class H(BaseHTTPRequestHandler):
                     sl = slots_py(t0, len(todo), int(d.get("every_min", 90)), d.get("win_from", "08:00"), d.get("win_to", "23:00"))
                     plan = [dict(run=x["run"], file=x["file"], time=t.strftime("%Y-%m-%dT%H:%M")) for x, t in zip(todo, sl)]
                     out = dict(plan=plan, scheduled=0 if d.get("dry") else len(plan))
-                    if d.get("platform"):
-                        kd = env().get("BLOTATO_API_KEY"); out["blotato_requests"] = []
-                        for x, t in zip(todo, sl): out["blotato_requests"].append(dict(run=x["run"], file=x["file"], requests=blotato_requests(x, dict(platform=d["platform"], accountId=d.get("accountId", ""), scheduledTime=t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")), kd)))
                     if not d.get("dry"):
                         for x, t in zip(todo, sl): S["schedule"][f"{x['run']}|{x['file']}"] = dict(local=t.strftime("%Y-%m-%dT%H:%M"), utc=t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
                         save_state(S)
                 return self.send(200, out)
             if p == "/api/connections/test": return self.send(200, conn_test(d.get("name")))
-            if p == "/api/schedule/plan":  # DRY ONLY: the requests Blotato would get for every scheduled Short. There is no send route for the plan.
-                kd = env().get("BLOTATO_API_KEY"); plan = []
-                for r in schedule_rows():
-                    s = [x for x in shorts(r["run"]) if x["file"] == r["file"]]
-                    if s and r["utc"]: plan.append(dict(file=r["file"], run=r["run"], request=blotato_requests(s[0], dict(platform=d["platform"], accountId=d.get("accountId", ""), scheduledTime=r["utc"]), kd)[2]))
-                return self.send(200, {"dry_run_only": True, "has_key": bool(kd), "count": len(plan), "plan": plan})
             if p == "/api/rerender":
                 cmd, vdir, pf, plist = rerender(d)
                 if not d.get("dry"):  # a preview must not write anything
@@ -910,14 +881,6 @@ class H(BaseHTTPRequestHandler):
                 st = ap_status()
                 if st: st["notified"] = True; (WS / "autopilot_status.json").write_text(json.dumps(st), encoding="utf-8")
                 return self.send(200, {"ok": 1})
-            if p == "/api/key":
-                E = env(); E["BLOTATO_API_KEY"] = d["key"]; save_env(E); return self.send(200, {"ok": 1})
-            if p in ("/api/blotato/preview", "/api/blotato/send"):
-                s = [x for x in shorts(d["run"]) if x["file"] == d["file"]][0]; f = d["form"]; kd = env().get("BLOTATO_API_KEY")
-                if p.endswith("preview"): return self.send(200, {"requests": blotato_requests(s, f, kd), "will_send": False})
-                if not kd: return self.send(400, {"error": "no Blotato key set"})
-                if d.get("confirm") is not True or not f.get("accountId"): return self.send(400, {"error": "needs confirm click and accountId"})
-                return self.send(200, {"response": blotato_send(d["run"], s, f, kd)})
         except urllib.error.HTTPError as e: return self.send(502, {"error": f"{e.code} {e.read()[:300].decode(errors='replace')}"})
         except Exception as e: return self.send(400, {"error": str(e)})
         self.send(404, {})

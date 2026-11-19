@@ -2,6 +2,10 @@
 
 All notable changes to gta6-clipper. Newest first.
 
+## 1.0.8
+### Changed
+- Removed third-party posting integration; scheduling and CSV export remain, and posting is manual.
+
 ## 1.0.7
 ### Added
 - OpenCode as an AI tool (Settings > AI tool). The install and setup sentences also work inside OpenCode, on its free models.
@@ -37,13 +41,10 @@ All notable changes to gta6-clipper. Newest first.
 
 ## 1.0.2
 ### Added
-- "Connect Blotato" dialog with four steps and the official Blotato MCP command.
 ### Changed
-- The Blotato card is separated from the buttons below it; the side-menu Auto-post button opens the dialog.
 
 ## 1.0.1
 ### Added
-- Visible Blotato auto-post card on Home, an Auto-post button in the side menu and a banner on the Approved page.
 ### Changed
 - Moments are anchored on the chat spike and start with their setup; windows up to 60 s are allowed.
 
